@@ -131,6 +131,11 @@ public class DependenciesRenderer
 
     private final ProjectBuildingRequest buildingRequest;
 
+    // Store the size on disk for a given artifact.
+    private Map<Artifact, Long> artifactSize = new HashMap<Artifact, Long>();
+    // Store the size on disk of an artifact AND its dependencies.
+    private Map<Artifact, Long> artifactSizeWithDependencies = new HashMap<Artifact, Long>();
+
     static
     {
         Set<String> jarSubtype = new HashSet<String>();
@@ -145,7 +150,7 @@ public class DependenciesRenderer
     }
 
     /**
-     * 
+     *
     /**
      * Default constructor.
      *
@@ -161,7 +166,7 @@ public class DependenciesRenderer
      * @param projectBuilder {@link ProjectBuilder}
      * @param buildingRequest {@link ProjectBuildingRequest}
      */
-    public DependenciesRenderer( Sink sink, Locale locale, I18N i18n, Log log, 
+    public DependenciesRenderer( Sink sink, Locale locale, I18N i18n, Log log,
                                  Dependencies dependencies, DependencyNode dependencyTreeNode,
                                  DependenciesReportConfiguration config, RepositoryUtils repoUtils,
                                  RepositorySystem repositorySystem, ProjectBuilder projectBuilder,
@@ -198,6 +203,8 @@ public class DependenciesRenderer
     @Override
     public void renderBody()
     {
+        resolveAtrifacts( dependencies.getAllDependencies() );
+        computeArtifactWithDependenciesSize( dependencyNode );
         // Dependencies report
 
         if ( !dependencies.hasDependencies() )
@@ -350,6 +357,42 @@ public class DependenciesRenderer
     // Private methods
     // ----------------------------------------------------------------------
 
+    private void computeArtifactWithDependenciesSize( DependencyNode node )
+    {
+        Artifact currentArtifact = node.getArtifact();
+        long size;
+        if ( !artifactSize.containsKey( currentArtifact ) )
+        {
+            if ( currentArtifact.getFile() == null )
+            {
+                log.warn( "Impossible to take into account for Size with dependencies the artifact "
+                        + currentArtifact.getId() );
+                size = 0;
+            }
+            else
+            {
+                File artifactFile = dependencies.getFile( currentArtifact );
+                size = artifactFile.length();
+            }
+            artifactSize.put( currentArtifact, size );
+            log.info( "Size for " + currentArtifact + " = " + artifactSize.get( currentArtifact ) );
+        }
+        size = artifactSize.get( currentArtifact );
+        if ( !node.getChildren().isEmpty() )
+        {
+            for ( DependencyNode childNode : node.getChildren() )
+            {
+                Artifact childArtifact = childNode.getArtifact();
+                if ( !artifactSizeWithDependencies.containsKey( childArtifact ) )
+                {
+                    computeArtifactWithDependenciesSize( childNode );
+                }
+                size += artifactSizeWithDependencies.get( childArtifact );
+            }
+        }
+        artifactSizeWithDependencies.put( currentArtifact, size );
+    }
+
     /**
      * @param withClassifier <code>true</code> to include the classifier column, <code>false</code> otherwise.
      * @param withOptional <code>true</code> to include the optional column, <code>false</code> otherwise.
@@ -498,6 +541,7 @@ public class DependenciesRenderer
         // i18n
         String filename = getI18nString( "file.details.column.file" );
         String size = getI18nString( "file.details.column.size" );
+        String sizeWithDeps = getI18nString( "file.details.column.sizewithdeps" );
         String entries = getI18nString( "file.details.column.entries" );
         String classes = getI18nString( "file.details.column.classes" );
         String packages = getI18nString( "file.details.column.packages" );
@@ -512,7 +556,8 @@ public class DependenciesRenderer
 
         int[] justification =
             new int[] { Sink.JUSTIFY_LEFT, Sink.JUSTIFY_RIGHT, Sink.JUSTIFY_RIGHT, Sink.JUSTIFY_RIGHT,
-                Sink.JUSTIFY_RIGHT, Sink.JUSTIFY_CENTER, Sink.JUSTIFY_CENTER, Sink.JUSTIFY_CENTER };
+                    Sink.JUSTIFY_RIGHT, Sink.JUSTIFY_RIGHT, Sink.JUSTIFY_CENTER, Sink.JUSTIFY_CENTER,
+                    Sink.JUSTIFY_CENTER };
 
         startTable( justification, false );
 
@@ -532,14 +577,15 @@ public class DependenciesRenderer
         String[] tableHeaderTitles;
         if ( hasSealed )
         {
-            tableHeader = new String[] { filename, size, entries, classes, packages, javaVersion, debugInformation,
-                                         sealed };
-            tableHeaderTitles = new String[] { null, null, null, null, null, null, debugInformationTitle, null };
+            tableHeader = new String[] { filename, size, sizeWithDeps, entries, classes, packages, javaVersion,
+                    debugInformation, sealed };
+            tableHeaderTitles = new String[] { null, null, null, null, null, null, null, debugInformationTitle, null };
         }
         else
         {
-            tableHeader = new String[] { filename, size, entries, classes, packages, javaVersion, debugInformation };
-            tableHeaderTitles = new String[] { null, null, null, null, null, null, debugInformationTitle };
+            tableHeader = new String[] { filename, size, sizeWithDeps, entries, classes, packages, javaVersion,
+                    debugInformation };
+            tableHeaderTitles = new String[] { null, null, null, null, null, null, null, debugInformationTitle };
         }
         tableHeader( tableHeader, tableHeaderTitles );
 
@@ -597,16 +643,19 @@ public class DependenciesRenderer
 
                     String name = artifactFile.getName();
                     String fileLength = fileLengthDecimalFormat.format( artifactFile.length() );
+                    String lengthWithDeps =
+                            fileLengthDecimalFormat.format( artifactSizeWithDependencies.get( artifact ) );
 
                     if ( artifactFile.isDirectory() )
                     {
                         File parent = artifactFile.getParentFile();
                         name = parent.getParentFile().getName() + '/' + parent.getName() + '/' + artifactFile.getName();
                         fileLength = "-";
+                        lengthWithDeps = "-";
                     }
 
                     tableRow( hasSealed,
-                              new String[] { name, fileLength,
+                              new String[] { name, fileLength, lengthWithDeps,
                                   DEFAULT_DECIMAL_FORMAT.format( jarDetails.getNumEntries() ),
                                   DEFAULT_DECIMAL_FORMAT.format( jarDetails.getNumClasses() ),
                                   DEFAULT_DECIMAL_FORMAT.format( jarDetails.getNumPackages() ),
@@ -621,7 +670,9 @@ public class DependenciesRenderer
             {
                 tableRow( hasSealed,
                           new String[] { artifactFile.getName(),
-                              fileLengthDecimalFormat.format( artifactFile.length() ), "", "", "", "", "", "" } );
+                              fileLengthDecimalFormat.format( artifactFile.length() ),
+                                  fileLengthDecimalFormat.format( artifactSizeWithDependencies.get( artifact ) ),
+                                  "", "", "", "", "", "" } );
             }
         }
 
@@ -637,7 +688,7 @@ public class DependenciesRenderer
             if ( totaldeps.getTotal( i ) > 0 )
             {
                 tableRow( hasSealed,
-                          new String[] { totaldeps.getTotalString( i ), totaldepsize.getTotalString( i ),
+                          new String[] { totaldeps.getTotalString( i ), totaldepsize.getTotalString( i ), "-",
                               totalentries.getTotalString( i ), totalclasses.getTotalString( i ),
                               totalpackages.getTotalString( i ), ( i < 0 ) ? String.valueOf( highestJavaVersion ) : "",
                               totalDebugInformation.getTotalString( i ), totalsealed.getTotalString( i ) } );
